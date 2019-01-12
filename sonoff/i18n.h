@@ -402,6 +402,11 @@
 #define D_CMND_LATITUDE "Latitude"
 #define D_CMND_LONGITUDE "Longitude"
 
+// Commands xdrv_91_rollershutter.ino
+#define D_CMND_RS "RollerShutter"
+#define D_CMND_RS_AC "RollerShutterAction"
+#define D_CMND_RS_PC "RollerShutterPercent"
+
 /********************************************************************************************/
 
 #define D_ASTERIX "********"
