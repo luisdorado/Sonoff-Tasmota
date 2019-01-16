@@ -13,7 +13,7 @@ void RollerShutterInit(){
   snprintf_P(log_data, sizeof(log_data), "RollerShutter Init");
   AddLog(LOG_LEVEL_INFO);
 
-  ExecuteCommandPower(1, POWER_OFF_NO_STATE, SRC_BUTTON); // SRC_BUTTON COMO ORIGEN PARA QUE SE TRATE COMO ORDEN INTERNA
+  ExecuteCommandPower(1, POWER_OFF_NO_STATE, SRC_BUTTON); // SRC_BUTTON SO THAT IT WONT SEND A MQTT UPDATE MESSAGE
   ExecuteCommandPower(2, POWER_OFF_NO_STATE, SRC_BUTTON);
   ExecuteCommandPower(3, POWER_OFF_NO_STATE, SRC_BUTTON);
   ExecuteCommandPower(4, POWER_OFF_NO_STATE, SRC_BUTTON);
@@ -23,108 +23,109 @@ void RollerShutterInit(){
 void RollerShutterMqttSubscribe() {
   char stopic[TOPSZ];
 
-  if(PER_NUM_PERSIANAS > 0){
-    GetTopic_P(stopic, STAT, Settings.mqtt_topic, "RollerShutterPercent1"); // Suscribo el porcentaje de la persiana 1
+  if(RS_MAX_ROLLERSHUTTERS > 0){
+    GetTopic_P(stopic, STAT, Settings.mqtt_topic, "RollerShutterPercent1"); // Subscribed to last persistent Status value in MQTT for RS #1
     MqttSubscribe(stopic);
 
-    snprintf_P(log_data, sizeof(log_data), PSTR("RS1: Suscrito a valor ini MQTT => %s"), stopic);
+    snprintf_P(log_data, sizeof(log_data), PSTR("RS1: Subscribed to last persistent Status value in MQTT => %s"), stopic);
     AddLog(LOG_LEVEL_INFO);
   }
-  if(PER_NUM_PERSIANAS > 1){
-    GetTopic_P(stopic, STAT, Settings.mqtt_topic, "RollerShutterPercent2"); // Suscribo el porcentaje de la persiana 2
+  if(RS_MAX_ROLLERSHUTTERS > 1){
+    GetTopic_P(stopic, STAT, Settings.mqtt_topic, "RollerShutterPercent2"); // Subscribed to last persistent Status value in MQTT for RS #2
     MqttSubscribe(stopic);
 
-    snprintf_P(log_data, sizeof(log_data), PSTR("RS2: Suscrito a valor ini MQTT => %s"), stopic);
+    snprintf_P(log_data, sizeof(log_data), PSTR("RS2: Subscribed to last persistent Status value in MQTT => %s"), stopic);
     AddLog(LOG_LEVEL_INFO);
   }
 }
 
-// mqtt initial value persistent value received
-void rsInitMqttValue(int rs_index, byte valor) {
-  snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Recibido PCT ini MQTT, elimino suscripcion: %d"), rs_index, valor);
-  AddLog(LOG_LEVEL_INFO);
-
-  if(!inicializado[rs_index-1]){
-    if(valor >= 100){
-      // El total del recorrido mas el de las lamas
-      perTiempoPosicionActual[rs_index-1] = per_tiempo_total_recorrido[rs_index-1] + per_tiempo_adicional_lamas[rs_index-1];
+// MQTT last persistent value received
+void rsInitMqttValue(int rs_index, byte value) {
+  if(!initializedWithLastPersistentMQTTValue[rs_index-1]){
+    if(value >= 100){
+      // Current position = ms needed for the full path + additional time
+      rsCurrentPositionTime[rs_index-1] = rs_full_path_time[rs_index-1] + rs_time_from_100_to_max[rs_index-1];
     }else{
-      // El proporcional al recorrido solamente
-      perTiempoPosicionActual[rs_index-1] = porcentajeATiempo(rs_index, valor);
+      // Current position = ms needed to move from 0 position to current percentage value
+      rsCurrentPositionTime[rs_index-1] = convertPercentageToTime(rs_index, value);
     }
-    // Lo marco como inicializado
-    inicializado[rs_index-1] = true;
+    // Set as initialized
+    initializedWithLastPersistentMQTTValue[rs_index-1] = true;
 
-    snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Recibido PCT ini MQTT, elimino suscripcion: %d"), rs_index, valor);
+    snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: received OK last position stored in MQTT, unsubscribing: %d"), rs_index, value);
     AddLog(LOG_LEVEL_INFO);
   }
-  // Quito la suscripcion al porcentaje
+  // Remove subscription
   char stopic[TOPSZ];
   GetTopic_P(stopic, STAT, Settings.mqtt_topic, (rs_index == 1)? "RollerShutterPercent1" : "RollerShutterPercent2");
   MqttClient.unsubscribe(stopic);
 }
 
-// Funcion llamada siempre al recibir un comando para asegurar que he inicializado valores
-void inicializar(int rs_index) {
-    if(!inicializado[rs_index-1]){
-      // No se ha inicializado aun por mqtt, lo hago manualmente
-      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Inicializo a mano"), rs_index);
+// Assure that some initial value is set
+void initValues(int rs_index) {
+    if(!initializedWithLastPersistentMQTTValue[rs_index-1]){
+      // Position still not initalized
+      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Initial position forced initial value to 0"), rs_index);
       AddLog(LOG_LEVEL_INFO);
-      // No he podido obtener de mqtt los datos iniciales pero necesito empezar, se los pongo yo
-      perTiempoPosicionActual[rs_index-1] = 0;
-      inicializado[rs_index-1] = true;
-      // Quito la suscripcion al porcentaje mqtt
+      // Still not received last MQTT stored value, but we need to start moving, so we it manual to 0
+      rsCurrentPositionTime[rs_index-1] = 0;
+      initializedWithLastPersistentMQTTValue[rs_index-1] = true;
+      // Unsubscribe MQTT last stored value, we dont need it anymore
       char stopic[TOPSZ];
       GetTopic_P(stopic, STAT, Settings.mqtt_topic, (rs_index == 1)? "RollerShutterPercent1" : "RollerShutterPercent2");
       MqttClient.unsubscribe(stopic);
     }
 }
 
-// Metodo al que se llama al detectar una pulsacion de boton fisico del sonoff
-// Lo uso para poder accionar el motor manualmente
-void RS_Boton(int btn_index, int hold_btn){
-  // Miro a que persiana corresponde
+// Triggers when physical Sonoff buttun is pressed
+// We use it to start actuators manually
+void RS_Button(int btn_index, int hold_btn){
+  // Choose the right Rollershutter to be moved depending on the pressed button number
   switch(btn_index){
     case 1:
-      if(perState[0] == RS_IDLE){
-        snprintf_P(log_data, sizeof(log_data), PSTR("RS1: Boton pulsado: UP. Subir"));
+      // RS#1, UP
+      if(rsMotorStatus[0] == RS_IDLE){
+        snprintf_P(log_data, sizeof(log_data), PSTR("RS1: Button pressed: UP. Going up"));
         AddLog(LOG_LEVEL_INFO);
         RSUp(1);
       }else{
-        snprintf_P(log_data, sizeof(log_data), PSTR("RS1: Boton pulsado: UP. Parar"));
+        snprintf_P(log_data, sizeof(log_data), PSTR("RS1: Button pressed: UP. Stop"));
         AddLog(LOG_LEVEL_INFO);
         RSStop(1);
       }
       break;
     case 2:
-      if(perState[0] == RS_IDLE){
-        snprintf_P(log_data, sizeof(log_data), PSTR("RS1: Boton pulsado: DOWN. Bajar"));
+      // RS#1, DOWN
+      if(rsMotorStatus[0] == RS_IDLE){
+        snprintf_P(log_data, sizeof(log_data), PSTR("RS1: Button pressed: DOWN. Going down"));
         AddLog(LOG_LEVEL_INFO);
         RSDown(1);
       }else{
-        snprintf_P(log_data, sizeof(log_data), PSTR("RS1: Boton pulsado: DOWN. Parar"));
+        snprintf_P(log_data, sizeof(log_data), PSTR("RS1: Button pressed: DOWN. Stop"));
         AddLog(LOG_LEVEL_INFO);
         RSStop(1);
       }
       break;
     case 3:
-      if(perState[1] == RS_IDLE){
-        snprintf_P(log_data, sizeof(log_data), PSTR("RS2: Boton pulsado: UP. Subir"));
+      // RS#2, UP
+      if(rsMotorStatus[1] == RS_IDLE){
+        snprintf_P(log_data, sizeof(log_data), PSTR("RS2: Button pressed: UP. Going up"));
         AddLog(LOG_LEVEL_INFO);
         RSUp(2);
       }else{
-        snprintf_P(log_data, sizeof(log_data), PSTR("RS2: Boton pulsado: UP. Parar"));
+        snprintf_P(log_data, sizeof(log_data), PSTR("RS2: Button pressed: UP. Stop"));
         AddLog(LOG_LEVEL_INFO);
         RSStop(2);
       }
       break;
     case 4:
-      if(perState[1] == RS_IDLE){
-        snprintf_P(log_data, sizeof(log_data), PSTR("RS2: Boton pulsado: DOWN. Bajar"));
+      // RS#2, DOWN
+      if(rsMotorStatus[1] == RS_IDLE){
+        snprintf_P(log_data, sizeof(log_data), PSTR("RS2: Button pressed: DOWN. Going down"));
         AddLog(LOG_LEVEL_INFO);
         RSDown(2);
       }else{
-        snprintf_P(log_data, sizeof(log_data), PSTR("RS2: Boton pulsado: DOWN. Parar"));
+        snprintf_P(log_data, sizeof(log_data), PSTR("RS2: Button pressed: DOWN. Stop"));
         AddLog(LOG_LEVEL_INFO);
         RSStop(2);
       }
@@ -132,12 +133,12 @@ void RS_Boton(int btn_index, int hold_btn){
   }
 }
 
-// Metodo llamado en cada ciclo del loop de tasmota
+// Handler, called by FUNC_EVERY_50_MSECOND througn interface
 void RollerShutterHandler(){
-  if(PER_NUM_PERSIANAS>0){
+  if(RS_MAX_ROLLERSHUTTERS>0){
     RollerShutterHandler(1);
   }
-  if(PER_NUM_PERSIANAS>1){
+  if(RS_MAX_ROLLERSHUTTERS>1){
     RollerShutterHandler(2);
   }
 }
@@ -145,418 +146,418 @@ void RollerShutterHandler(){
 void RollerShutterHandler(int rs_index){
   unsigned long now = millis();
 
-  // Si esta en movimiento
-  if(perState[rs_index-1] != RS_IDLE){
-    // Miro si ya he llegado al objetivo
-    if((now - perTiempoInicioMotor[rs_index-1]) >= perTiempoAMoverMotor[rs_index-1]){
-      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Objetivo alcanzado tiempoMoviendo:%d tiempoAMover:%d"), rs_index, (now - perTiempoInicioMotor[rs_index-1]), perTiempoAMoverMotor[rs_index-1]);
+  // Check if moving
+  if(rsMotorStatus[rs_index-1] != RS_IDLE){
+    // Check if target position is reached
+    if((now - rsInitialTime[rs_index-1]) >= rsTotalEstimatedTime[rs_index-1]){
+      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Target reached tiempoMoviendo:%d tiempoAMover:%d"), rs_index, (now - rsInitialTime[rs_index-1]), rsTotalEstimatedTime[rs_index-1]);
       AddLog(LOG_LEVEL_DEBUG);
 
-      // Actualizo posicion actual antes de poner el estado a IDLE
-      actualizarTiempoPosicionActual(rs_index);
+      // Update current position before setting status to IDLE
+      updateCurrentPositionTime(rs_index);
 
-      // Actualizo estado
-      perState[rs_index-1] = RS_IDLE;
-      // Indico que ha cambiado el estado para que se actualice en la proxima iteracion
-      cambiadoEstado[rs_index-1] = true;
+      // Update motor status
+      rsMotorStatus[rs_index-1] = RS_IDLE;
+      // Set statusChanged variable to be managed in next iteration
+      statusChanged[rs_index-1] = true;
     }else{
-      // No ha llegado al Objetivo
-      if(ciclosSerial == 50){
-        actualizarTiempoPosicionActual(rs_index);
-        snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: transcurrido:%d total:%d posActual:%d"), rs_index, (now - perTiempoInicioMotor[rs_index-1]), perTiempoAMoverMotor[rs_index-1], perTiempoPosicionActual[rs_index-1]);
+      // Still target not reached
+      // Every 50 cycles show output to Serial
+      if(serialOutputCycles == 50){
+        updateCurrentPositionTime(rs_index);
+        snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: elapsedTime:%d totalEstimatedTime:%d currentPositionTime:%d"), rs_index, (now - rsInitialTime[rs_index-1]), rsTotalEstimatedTime[rs_index-1], rsCurrentPositionTime[rs_index-1]);
         AddLog(LOG_LEVEL_DEBUG);
-        ciclosSerial = 0;
+        serialOutputCycles = 0;
       }else{
-        ciclosSerial++;
+        serialOutputCycles++;
       }
     }
   }
 
-  // Si acaba de cambiar de estado
-  if(cambiadoEstado[rs_index-1]){
-    if(perState[rs_index-1] == RS_IDLE){
-      // Parado, ha llegado al objetivo o se le ha mandado parar
+  // Status has been changed
+  if(statusChanged[rs_index-1]){
+    if(rsMotorStatus[rs_index-1] == RS_IDLE){
+      // Motor idle: target has been reached or stop command has been received
 
-      // Apago ambos reles sin enviar el cambio de estado a mqtt
-      ExecuteCommandPower(persiana_down_actuator[rs_index-1], POWER_OFF_NO_STATE, SRC_BUTTON);
-      ExecuteCommandPower(persiana_up_actuator[rs_index-1], POWER_OFF_NO_STATE, SRC_BUTTON);
+      // Switch off both relays
+      ExecuteCommandPower(rs_down_actuator[rs_index-1], POWER_OFF_NO_STATE, SRC_BUTTON);
+      ExecuteCommandPower(rs_up_actuator[rs_index-1], POWER_OFF_NO_STATE, SRC_BUTTON);
 
-      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Cambiado estado a IDLE. Pos actual:%d PCTactual:%d Envio retained"), rs_index, perTiempoPosicionActual[rs_index-1], tiempoAPorcentaje(rs_index, perTiempoPosicionActual[rs_index-1]));
+      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Motor status changed to IDLE. Current position: %d Current percentage: %d. Sending MQTT retained message to store value"), rs_index, rsCurrentPositionTime[rs_index-1], convertTimeToPercentage(rs_index, rsCurrentPositionTime[rs_index-1]));
       AddLog(LOG_LEVEL_INFO);
 
-      // Almaceno valor en mqtt como retained
-      perSendPorcentaje(rs_index, true);
-      // Mando info del estado
-      perSendEstado(rs_index);
-    }else if(perState[rs_index-1] == RS_UP){
-      // Subiendo
+      // Send MQTT position value as retained message
+      rsSendPercentage(rs_index, true);
+      // Send MQTT motor status message
+      rsSendStatus(rs_index);
+    }else if(rsMotorStatus[rs_index-1] == RS_UP){
+      // Going up
 
-      // Hago los cambios en los reles sin enviar el cambio de estado a mqtt
-      ExecuteCommandPower(persiana_down_actuator[rs_index-1], POWER_OFF_NO_STATE, SRC_BUTTON);
-      ExecuteCommandPower(persiana_up_actuator[rs_index-1], POWER_ON_NO_STATE, SRC_BUTTON);
+      // Change relays to start moving
+      ExecuteCommandPower(rs_down_actuator[rs_index-1], POWER_OFF_NO_STATE, SRC_BUTTON);
+      ExecuteCommandPower(rs_up_actuator[rs_index-1], POWER_ON_NO_STATE, SRC_BUTTON);
 
-      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Cambiado estado a UP"), rs_index);
+      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Motor Status changed to UP"), rs_index);
       AddLog(LOG_LEVEL_INFO);
 
-      // Mando info del estado
-      perSendEstado(rs_index);
-    }else if(perState[rs_index-1] == RS_DOWN){
-      // Bajando
+      // Send MQTT motor status message
+      rsSendStatus(rs_index);
+    }else if(rsMotorStatus[rs_index-1] == RS_DOWN){
+      // Going down
 
-      // Hago los cambios en los reles sin enviar el cambio de estado a mqtt
-      ExecuteCommandPower(persiana_up_actuator[rs_index-1], POWER_OFF_NO_STATE, SRC_BUTTON);
-      ExecuteCommandPower(persiana_down_actuator[rs_index-1], POWER_ON_NO_STATE, SRC_BUTTON);
+      // Change relays to start moving
+      ExecuteCommandPower(rs_up_actuator[rs_index-1], POWER_OFF_NO_STATE, SRC_BUTTON);
+      ExecuteCommandPower(rs_down_actuator[rs_index-1], POWER_ON_NO_STATE, SRC_BUTTON);
 
-      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Cambiado estado a DOWN"), rs_index);
+      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Motor Status changed to DOWN"), rs_index);
       AddLog(LOG_LEVEL_INFO);
 
-      // Mando info del estado
-      perSendEstado(rs_index);
+      // Send MQTT motor status message
+      rsSendStatus(rs_index);
     }
-    // Desmarco el cambio de estado
-    cambiadoEstado[rs_index-1] = false;
+    // set statusChanged again to false
+    statusChanged[rs_index-1] = false;
   }
 }
 
 void RSStop(int rs_index){
-  inicializar(rs_index);
+  initValues(rs_index);
   unsigned long now = millis();
 
-  if(perState[rs_index-1] != RS_IDLE){
-    // Solicitado PARAR y no estaba ya parado
+  if(rsMotorStatus[rs_index-1] != RS_IDLE){
+    // STOP command received and motor not IDLE
 
-    // Indico que ya he llegado al objetivo para que pare
-    perTiempoAMoverMotor[rs_index-1] = now - perTiempoInicioMotor[rs_index-1];
+    // Set target to current position so that will stopped in handler function
+    rsTotalEstimatedTime[rs_index-1] = now - rsInitialTime[rs_index-1];
 
-    snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Solicitado parar"), rs_index);
+    snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Stop command received"), rs_index);
     AddLog(LOG_LEVEL_INFO);
 
-    // Llamo inmediatamente a la funcion que lo trata, en lugar de esperar a otro ciclo
+    // Call RollerShutterHandler right now instead of wait for next iteration
     RollerShutterHandler(rs_index);
   }else{
-    snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Solicitado parar pero ya parado, no hago nada. Reenvio info estado"), rs_index);
+    snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Stop command received but already stopped. Doing nothing. Current status resent"), rs_index);
     AddLog(LOG_LEVEL_INFO);
 
-    // Como parece que el controlador no estaba al tanto de mi estado, vuelvo a mandar toda la info de estado y pct
-    perSendStatus(rs_index);
+    // Status and position are sent again as it seems to have wrong values stored
+    rsSendCurrentValues(rs_index);
   }
 }
 
 void RSUp(int rs_index){
-  inicializar(rs_index);
+  initValues(rs_index);
   unsigned long now = millis();
 
-  // Actualizo la posicion actual (si estaba parado no recalcula, si estaba en movimiento actualiza la posicion)
-  actualizarTiempoPosicionActual(rs_index);
+  // Update current position (if it was idle it wont be updated. If it was moving, position will be updated)
+  updateCurrentPositionTime(rs_index);
 
-  snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Solicitado subir. posActual:%d estadoActual:%d"), rs_index, perTiempoPosicionActual[rs_index-1], perState[rs_index-1]);
+  snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Up command received. currentPos:%d currentStatus:%d"), rs_index, rsCurrentPositionTime[rs_index-1], rsMotorStatus[rs_index-1]);
   AddLog(LOG_LEVEL_INFO);
 
-  // Miro si no esta ya arriba y (no esta subiendo o esta subiendo pero a una posicion intermedia)
-  if((perTiempoPosicionActual[rs_index-1] > 0) && (perState[rs_index-1] != RS_UP || ((perTiempoPosicionInicial[rs_index-1] - perTiempoAMoverMotor[rs_index-1]) > 0))){
-    // Tiempo actual como inicio de motor
-    perTiempoInicioMotor[rs_index-1] = now;
-    // Tiempo actual como inicio de motor
-    perTiempoPosicionInicial[rs_index-1] = perTiempoPosicionActual[rs_index-1];
+  // Check if: (already at position 0 (TOP)) AND (motor is not going up or is going up from intermediate position)
+  if((rsCurrentPositionTime[rs_index-1] > 0) && (rsMotorStatus[rs_index-1] != RS_UP || ((rsInitialPositionTime[rs_index-1] - rsTotalEstimatedTime[rs_index-1]) > 0))){
+    // Set current time as initial time
+    rsInitialTime[rs_index-1] = now;
+    // Current position in ms as initial position
+    rsInitialPositionTime[rs_index-1] = rsCurrentPositionTime[rs_index-1];
 
-    // El tiempo necesario para mover motor es la posicion actual
-    perTiempoAMoverMotor[rs_index-1] = perTiempoPosicionActual[rs_index-1];
-    // Miro si parto de una posicion intermedia
-    if(perTiempoPosicionActual[rs_index-1] < (per_tiempo_total_recorrido[rs_index-1] + per_tiempo_adicional_lamas[rs_index-1])){
-      // Parto de pos intermedia
-      perTiempoAMoverMotor[rs_index-1] = perTiempoAMoverMotor[rs_index-1] + per_tiempo_ajuste_recorrido[rs_index-1];
+    // Estimated time = current position in ms
+    rsTotalEstimatedTime[rs_index-1] = rsCurrentPositionTime[rs_index-1];
+    // Check if starting from intermediate position
+    if(rsCurrentPositionTime[rs_index-1] < (rs_full_path_time[rs_index-1] + rs_time_from_100_to_max[rs_index-1])){
+      // intermediate position
+      rsTotalEstimatedTime[rs_index-1] = rsTotalEstimatedTime[rs_index-1] + rs_fix_time_if_target_is_end[rs_index-1];
 
-      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Parto desde pos intermedia, añado ajuste"), rs_index);
+      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Starting from intermediate position, adding rs_fix_time_if_target_is_end"), rs_index);
       AddLog(LOG_LEVEL_DEBUG);
     }else{
-      // Parto desde abajo del todo
-      perTiempoAMoverMotor[rs_index-1] = perTiempoAMoverMotor[rs_index-1] +per_tiempo_adicional_lamas[rs_index-1];
+      // Starting from max bottom position
+      rsTotalEstimatedTime[rs_index-1] = rsTotalEstimatedTime[rs_index-1] +rs_time_from_100_to_max[rs_index-1];
 
-      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Parto desde abajo, añado lamas"), rs_index);
+      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Starting from bottom, adding rs_time_from_100_to_max"), rs_index);
       AddLog(LOG_LEVEL_DEBUG);
     }
 
-    // Motor subiendo si no lo estaba ya
-    if(perState[rs_index-1] != RS_UP){
-      perState[rs_index-1] = RS_UP;
-      cambiadoEstado[rs_index-1] = true;
+    // Going up
+    if(rsMotorStatus[rs_index-1] != RS_UP){
+      rsMotorStatus[rs_index-1] = RS_UP;
+      statusChanged[rs_index-1] = true;
     }
 
-    // Llamo inmediatamente a la funcion que lo trata, en lugar de esperar a otro ciclo
+    // Call RollerShutterHandler right now instead of wait for next iteration
     RollerShutterHandler(rs_index);
   }else{
     #ifdef SERIAL_OUTPUT
-      if(perTiempoPosicionActual[rs_index-1] == 0){
-        snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Ya arriba, no hago nada"), rs_index);
+      if(rsCurrentPositionTime[rs_index-1] == 0){
+        snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Already at TOP, do nothing"), rs_index);
         AddLog(LOG_LEVEL_INFO);
       }
-      if((perTiempoPosicionInicial[rs_index-1] - perTiempoAMoverMotor[rs_index-1]) <= 0){
-        snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Ya objetivo 0, no hago nada"), rs_index);
+      if((rsInitialPositionTime[rs_index-1] - rsTotalEstimatedTime[rs_index-1]) <= 0){
+        snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Same target position than before, doing nothing"), rs_index);
         AddLog(LOG_LEVEL_INFO);
       }
     #endif
-    // Como parece que el controlador no estaba al tanto de mi estado, lo vuelvo a mandar
-    perSendStatus(rs_index);
+    // Status and position are sent again as it seems to have wrong values stored
+    rsSendCurrentValues(rs_index);
   }
 }
 
 void RSDown(int rs_index){
-  inicializar(rs_index);
+  initValues(rs_index);
   unsigned long now = millis();
 
-  snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Solicitado bajar. posActual:%d estadoActual:%d"), rs_index, perTiempoPosicionActual[rs_index-1], perState[rs_index-1]);
+  snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Down command. Current pos:%d Current st:%d"), rs_index, rsCurrentPositionTime[rs_index-1], rsMotorStatus[rs_index-1]);
   AddLog(LOG_LEVEL_INFO);
 
-  // Actualizo la posicion actual (si estaba parado no recalcula, si estaba en movimiento actualiza la posicion)
-  actualizarTiempoPosicionActual(rs_index);
+  // Update current position (only will be updated if it was moving)
+  updateCurrentPositionTime(rs_index);
 
   if(
-      (perTiempoPosicionActual[rs_index-1] < (per_tiempo_total_recorrido[rs_index-1] + per_tiempo_adicional_lamas[rs_index-1])) && // No esta ya abajo
-      (perState[rs_index-1] != RS_DOWN || ((perTiempoPosicionInicial[rs_index-1] + perTiempoAMoverMotor[rs_index-1]) < (per_tiempo_total_recorrido[rs_index-1] + per_tiempo_adicional_lamas[rs_index-1]))) // El objetivo no es abajo del todo
+      (rsCurrentPositionTime[rs_index-1] < (rs_full_path_time[rs_index-1] + rs_time_from_100_to_max[rs_index-1])) && // No esta ya abajo
+      (rsMotorStatus[rs_index-1] != RS_DOWN || ((rsInitialPositionTime[rs_index-1] + rsTotalEstimatedTime[rs_index-1]) < (rs_full_path_time[rs_index-1] + rs_time_from_100_to_max[rs_index-1]))) // El objetivo no es abajo del todo
     ){
-    // No esta ya abajo y (no esta bajando o esta bajando pero no hasta abajo del todo)
+    // Current position is not bottom AND (not going down OR going down to intermediate position)
 
-    // Tiempo actual como inicio de motor
-    perTiempoInicioMotor[rs_index-1] = now;
-    // Tiempo actual como inicio de motor
-    perTiempoPosicionInicial[rs_index-1] = perTiempoPosicionActual[rs_index-1];
+    // Current time as initial time
+    rsInitialTime[rs_index-1] = now;
+    // Current position in ms as init position
+    rsInitialPositionTime[rs_index-1] = rsCurrentPositionTime[rs_index-1];
 
-    // El tiempo necesario para mover motor es el total - la posicion actual
-    perTiempoAMoverMotor[rs_index-1] = (per_tiempo_total_recorrido[rs_index-1] + per_tiempo_adicional_lamas[rs_index-1])  - perTiempoPosicionActual[rs_index-1];
-    if(perTiempoPosicionActual[rs_index-1] > 0){
-      // Parto de posicion intermedia, añado ajuste
-      perTiempoAMoverMotor[rs_index-1] = perTiempoAMoverMotor[rs_index-1] + per_tiempo_ajuste_recorrido[rs_index-1];
+    // Estimated time = rs_full_path_time - current position
+    rsTotalEstimatedTime[rs_index-1] = (rs_full_path_time[rs_index-1] + rs_time_from_100_to_max[rs_index-1])  - rsCurrentPositionTime[rs_index-1];
+    if(rsCurrentPositionTime[rs_index-1] > 0){
+      // Start from intermediate position, we have to add fix time
+      rsTotalEstimatedTime[rs_index-1] = rsTotalEstimatedTime[rs_index-1] + rs_fix_time_if_target_is_end[rs_index-1];
 
-      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Parto de pos intermedia, añado ajuste"), rs_index);
+      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Start from intermediate pos., add fix time"), rs_index);
       AddLog(LOG_LEVEL_DEBUG);
     }
 
-    // Motor bajando si no lo estaba ya
-    if(perState[rs_index-1] != RS_DOWN){
-      perState[rs_index-1] = RS_DOWN;
-      cambiadoEstado[rs_index-1] = true;
+    // Motor going down
+    if(rsMotorStatus[rs_index-1] != RS_DOWN){
+      rsMotorStatus[rs_index-1] = RS_DOWN;
+      statusChanged[rs_index-1] = true;
     }
 
-    // Llamo inmediatamente a la funcion que lo trata, en lugar de esperar a otro ciclo
+    // Call handler right now instead of waiting for next iteration
     RollerShutterHandler(rs_index);
   }else{
     #ifdef SERIAL_OUTPUT
-      if(perTiempoPosicionActual[rs_index-1] >= (per_tiempo_total_recorrido[rs_index-1] + per_tiempo_adicional_lamas[rs_index-1])){
-        snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Ya abajo, no hago nada. Reenvio estado MQTT"), rs_index);
+      if(rsCurrentPositionTime[rs_index-1] >= (rs_full_path_time[rs_index-1] + rs_time_from_100_to_max[rs_index-1])){
+        snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Already at the bottom, doing nothing. MQTT status resent"), rs_index);
         AddLog(LOG_LEVEL_INFO);
       }
-      if((perTiempoPosicionInicial[rs_index-1] + perTiempoAMoverMotor[rs_index-1]) >= (per_tiempo_total_recorrido[rs_index-1] + per_tiempo_adicional_lamas[rs_index-1])){
-        snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Objetivo ya era 100, no hago nada. Reenvio estado MQTT"), rs_index);
+      if((rsInitialPositionTime[rs_index-1] + rsTotalEstimatedTime[rs_index-1]) >= (rs_full_path_time[rs_index-1] + rs_time_from_100_to_max[rs_index-1])){
+        snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Same target than before, doing nothing. MQTT status resent"), rs_index);
         AddLog(LOG_LEVEL_INFO);
       }
     #endif
-    if(perTiempoPosicionActual[rs_index-1] >= (per_tiempo_total_recorrido[rs_index-1] + per_tiempo_adicional_lamas[rs_index-1])){
-      // Como parece que el controlador no estaba al tanto de mi estado, lo vuelvo a mandar
-      perSendStatus(rs_index);
+    if(rsCurrentPositionTime[rs_index-1] >= (rs_full_path_time[rs_index-1] + rs_time_from_100_to_max[rs_index-1])){
+      // Status and position are sent again as it seems to have wrong values stored
+      rsSendCurrentValues(rs_index);
     }
   }
 }
 
 void RSUpdateInfo(int rs_index){
-  snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Solicitado estado actual. Lo envio a MQTT"), rs_index);
+  snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Current status request. Sending MQTT status"), rs_index);
   AddLog(LOG_LEVEL_INFO);
-  perSendStatus(rs_index);
+  rsSendCurrentValues(rs_index);
 }
 
 void RSPercent(int rs_index, byte valor) {
-  inicializar(rs_index);
+  initValues(rs_index);
   unsigned long now = millis();
 
-  // Actualizo pos actual en caso de que se este moviendo
-  actualizarTiempoPosicionActual(rs_index);
-  int porcentajeActual = tiempoAPorcentaje(rs_index, perTiempoPosicionActual[rs_index-1]);
-  int porcentajeSolicitado = valor;
-  unsigned long tiempoPosicionSolicitada = porcentajeATiempo(rs_index, porcentajeSolicitado);
+  // Update current position if moving
+  updateCurrentPositionTime(rs_index);
+  int currentPercentage = convertTimeToPercentage(rs_index, rsCurrentPositionTime[rs_index-1]);
+  int requestedPercentage = valor;
+  unsigned long requestedPositionTime = convertPercentageToTime(rs_index, requestedPercentage);
 
-  snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Solicitado porcentaje, solicitado:%d actual:%d posicion sol.:%d posicion actual:%d"), rs_index, porcentajeSolicitado, porcentajeActual, tiempoPosicionSolicitada, perTiempoPosicionActual[rs_index-1]);
+  snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Requested percentage:%d current:%d requested pos.:%d current pos.:%d"), rs_index, requestedPercentage, currentPercentage, requestedPositionTime, rsCurrentPositionTime[rs_index-1]);
   AddLog(LOG_LEVEL_INFO);
 
-  // Miro si ya estoy comparando porcentajes a grosso modo
-  if(porcentajeActual != porcentajeSolicitado){
-    // No estoy en el porcentaje solicitado
-    // Pongo el tiempo inicial
-    perTiempoInicioMotor[rs_index-1] = now;
-    // Pongo la posicion inicial
-    perTiempoPosicionInicial[rs_index-1] = perTiempoPosicionActual[rs_index-1];
-    // Miro si tengo que ir arriba o abajo
-    if(porcentajeSolicitado < porcentajeActual){
-      // Tengo que subir
+  // Check if already at requested percentage
+  if(currentPercentage != requestedPercentage){
+    // Set initial time
+    rsInitialTime[rs_index-1] = now;
+    // Set initial position
+    rsInitialPositionTime[rs_index-1] = rsCurrentPositionTime[rs_index-1];
+    // Calculate moving direction
+    if(requestedPercentage < currentPercentage){
+      // Have to go UP
       snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Subiendo"), rs_index);
       AddLog(LOG_LEVEL_INFO);
 
-      // Pongo el tiempo que necesito
-      // Si estoy abajo del todo ya incluye las lamas
-      perTiempoAMoverMotor[rs_index-1] = perTiempoPosicionActual[rs_index-1] - tiempoPosicionSolicitada;
+      // Set estimated time
+      // If currently at the bottom, current position includes additional_time
+      rsTotalEstimatedTime[rs_index-1] = rsCurrentPositionTime[rs_index-1] - requestedPositionTime;
 
-      if(porcentajeSolicitado == 0 && porcentajeActual < 100){
-        // Pos intermedia, añado el ajuste de recorrido
-        perTiempoAMoverMotor[rs_index-1] = perTiempoAMoverMotor[rs_index-1] + per_tiempo_ajuste_recorrido[rs_index-1];
-        snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Solicitado arriba del todo desde posicion intermedia. Añado ajuste"), rs_index);
+      if(requestedPercentage == 0 && currentPercentage < 100){
+        // Intermediate position, adding fix time
+        rsTotalEstimatedTime[rs_index-1] = rsTotalEstimatedTime[rs_index-1] + rs_fix_time_if_target_is_end[rs_index-1];
+        snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Requested TOP position from intermediate position. Adding fix time"), rs_index);
         AddLog(LOG_LEVEL_DEBUG);
       }
 
-      // Cambio el estado si no estaba ya
-      if(perState[rs_index-1] != RS_UP){
-        perState[rs_index-1] = RS_UP;
-        cambiadoEstado[rs_index-1] = true;
+      // Set status
+      if(rsMotorStatus[rs_index-1] != RS_UP){
+        rsMotorStatus[rs_index-1] = RS_UP;
+        statusChanged[rs_index-1] = true;
       }
     }else{
-      // Tengo que bajar
-      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Bajando"), rs_index);
+      // Have to go down
+      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Going down"), rs_index);
       AddLog(LOG_LEVEL_INFO);
 
-      // Pongo el tiempo que necesito
-      perTiempoAMoverMotor[rs_index-1] = tiempoPosicionSolicitada - perTiempoPosicionActual[rs_index-1];
-      if(porcentajeSolicitado == 100){
-        // Añado el ajuste de lamas
-        perTiempoAMoverMotor[rs_index-1] = perTiempoAMoverMotor[rs_index-1] + per_tiempo_adicional_lamas[rs_index-1];
-        // Miro si parto de posicion intermedia
-        if(perTiempoPosicionActual[rs_index-1] > 0){
-          // Añado el ajuste de lamas
-          perTiempoAMoverMotor[rs_index-1] = perTiempoAMoverMotor[rs_index-1] + per_tiempo_ajuste_recorrido[rs_index-1];
+      // Set estimated time
+      rsTotalEstimatedTime[rs_index-1] = requestedPositionTime - rsCurrentPositionTime[rs_index-1];
+      if(requestedPercentage == 100){
+        // Have to add additional time
+        rsTotalEstimatedTime[rs_index-1] = rsTotalEstimatedTime[rs_index-1] + rs_time_from_100_to_max[rs_index-1];
+        // Check if currently at intermediate position
+        if(rsCurrentPositionTime[rs_index-1] > 0){
+          // Adding fix time
+          rsTotalEstimatedTime[rs_index-1] = rsTotalEstimatedTime[rs_index-1] + rs_fix_time_if_target_is_end[rs_index-1];
 
-          snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Solicitado abajo del todo desde posicion intermedia. Añado ajuste"), rs_index);
+          snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Requested bottom from intermediate position. Adding fix time"), rs_index);
           AddLog(LOG_LEVEL_DEBUG);
         }
       }
 
-      // Cambio el estado si no estaba ya
-      if(perState[rs_index-1] != RS_DOWN){
-        perState[rs_index-1] = RS_DOWN;
-        cambiadoEstado[rs_index-1] = true;
+      // Set status
+      if(rsMotorStatus[rs_index-1] != RS_DOWN){
+        rsMotorStatus[rs_index-1] = RS_DOWN;
+        statusChanged[rs_index-1] = true;
       }
     }
-    // Llamo inmediatamente a la funcion que lo trata, en lugar de esperar a otro ciclo
+    // Call handler right now instead of waiting for next iteration
     RollerShutterHandler(rs_index);
-  }else{ // Ya estoy en el solicitado
-    // Parar
-    if(perState[rs_index-1] != RS_IDLE){ // Miro si no estaba ya parado
-      // Indico que ya he llegado al objetivo para que pare
-      perTiempoAMoverMotor[rs_index-1] = now - perTiempoInicioMotor[rs_index-1];
+  }else{ // Already at target requested
+    // Stop
+    if(rsMotorStatus[rs_index-1] != RS_IDLE){ // Check if already IDLE
+      // Set time needed to make it stop
+      rsTotalEstimatedTime[rs_index-1] = now - rsInitialTime[rs_index-1];
 
-      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Solicitado mismo porcentaje en el que estoy y no estaba parado. Paro"), rs_index);
+      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Requested same percentage we are currently at. Stopping"), rs_index);
       AddLog(LOG_LEVEL_INFO);
-      // Llamo inmediatamente a la funcion que lo trata, en lugar de esperar a otro ciclo
+      // Call handler right now instead of waiting for next iteration
       RollerShutterHandler(rs_index);
     }
   }
 }
 
-// Envia el estado actual de toda la persiana
-void perSendStatus(int rs_index){
-	// Los estados del motor
-  perSendEstado(rs_index);
-	// El porcentaje
-  perSendPorcentaje(rs_index);
+// Send current status and percentage
+void rsSendCurrentValues(int rs_index){
+	// Status
+  rsSendStatus(rs_index);
+	// Percentage
+  rsSendPercentage(rs_index);
 }
 
-// Envia el estado actual del toda la persiana
-void perSendEstado(int rs_index){
+// Send current status
+void rsSendStatus(int rs_index){
   unsigned long currentMillis = millis();
-  // Los estados del motor
-  if(!perInitial_state_sent[rs_index-1] || ((perState[rs_index-1] != perStateEnviado[rs_index-1]) && (currentMillis - perUltimoEnvioEstado[rs_index-1] > PER_TIEMPO_ENTRE_ENVIOS_ESTADO))){
-    snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Envio estado a MQTT: %d"), rs_index, perState[rs_index-1]);
+  // Motor status
+  if(!rsInitialStateSent[rs_index-1] || ((rsMotorStatus[rs_index-1] != rsLastStatusSent[rs_index-1]) && (currentMillis - rsLastStatusSentTime[rs_index-1] > PER_TIEMPO_ENTRE_ENVIOS_ESTADO))){
+    snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Sending status to MQTT: %d"), rs_index, rsMotorStatus[rs_index-1]);
     AddLog(LOG_LEVEL_INFO);
 
-    // Actualizo estado en MQTT
+    // Update status in MQTT
     char stopic[TOPSZ];
-    snprintf_P(mqtt_data, sizeof(mqtt_data), PSTR("%d"), perState[rs_index-1]); // Pongo el valor
-    GetTopic_P(stopic, STAT, Settings.mqtt_topic, (rs_index == 1)? "RollerShutterAction1" : "RollerShutterAction2"); // Publico el estado
+    snprintf_P(mqtt_data, sizeof(mqtt_data), PSTR("%d"), rsMotorStatus[rs_index-1]); // Setting value
+    GetTopic_P(stopic, STAT, Settings.mqtt_topic, (rs_index == 1)? "RollerShutterAction1" : "RollerShutterAction2"); // Publish
     MqttPublish(stopic);
 
-    perUltimoEnvioEstado[rs_index-1] = currentMillis;
-    perStateEnviado[rs_index-1] = perState[rs_index-1];
+    rsLastStatusSentTime[rs_index-1] = currentMillis;
+    rsLastStatusSent[rs_index-1] = rsMotorStatus[rs_index-1];
   }
 }
 
-// Envia el estado actual del toda la persiana
-void perSendPorcentaje(int rs_index){
-  perSendPorcentaje(rs_index, false);
+// Send current percentage
+void rsSendPercentage(int rs_index){
+  rsSendPercentage(rs_index, false);
 }
 
-void perSendPorcentaje(int rs_index, boolean retained){
+void rsSendPercentage(int rs_index, boolean retained){
   unsigned long currentMillis = millis();
-  int pctActual = tiempoAPorcentaje(rs_index, perTiempoPosicionActual[rs_index-1]);
-  // Miro si es retained o no lo he inicializado o (ha cambiado y ha pasado el tiempo min entre envios)
-  if(!perInitial_state_sent[rs_index-1] || retained || ((perPorcentajeUltimoEnviado[rs_index-1] != pctActual) && (currentMillis - perUltimoEnvioPorcentaje[rs_index-1] > PER_TIEMPO_ENTRE_ENVIOS_PORCENTAJE))){
+  int currentPct = convertTimeToPercentage(rs_index, rsCurrentPositionTime[rs_index-1]);
+  // Check if: value is retained or not initialized or (has changed and time between updates reached)
+  if(!rsInitialStateSent[rs_index-1] || retained || ((rsLastPercentageSent[rs_index-1] != currentPct) && (currentMillis - rsLastPercentageSentTime[rs_index-1] > PER_TIEMPO_ENTRE_ENVIOS_PORCENTAJE))){
     #ifdef SERIAL_OUTPUT
       if(retained){
-        snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Envio porcentaje a MQTT (retained): %d"), rs_index, pctActual);
+        snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Send percentage to MQTT (retained): %d"), rs_index, currentPct);
         AddLog(LOG_LEVEL_INFO);
       }else{
-        snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Envio porcentaje a MQTT: %d"), rs_index, pctActual);
+        snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Send percentage to MQTT: %d"), rs_index, currentPct);
         AddLog(LOG_LEVEL_DEBUG);
       }
     #endif
-    // Actualizo estado en MQTT
+    // Update status in MQTT
     char stopic[TOPSZ];
-    snprintf_P(mqtt_data, sizeof(mqtt_data), PSTR("%d"), pctActual); // Configuro la cadena
-    GetTopic_P(stopic, STAT, Settings.mqtt_topic, (rs_index == 1)? "RollerShutterPercent1" : "RollerShutterPercent2"); // Publico el estado
+    snprintf_P(mqtt_data, sizeof(mqtt_data), PSTR("%d"), currentPct);
+    GetTopic_P(stopic, STAT, Settings.mqtt_topic, (rs_index == 1)? "RollerShutterPercent1" : "RollerShutterPercent2"); // Publish
     MqttPublish(stopic, retained);
 
-    perUltimoEnvioPorcentaje[rs_index-1] = currentMillis;
-    perPorcentajeUltimoEnviado[rs_index-1] = pctActual;
+    rsLastPercentageSentTime[rs_index-1] = currentMillis;
+    rsLastPercentageSent[rs_index-1] = currentPct;
   }
 }
 
-uint8_t tiempoAPorcentaje(int rs_index, unsigned long tiempo){
-  uint8_t porc = (uint8_t)(tiempo*100/per_tiempo_total_recorrido[rs_index-1]);
-  if(porc > 100) porc = 100;
-  if(porc < 0) porc = 0;
-  return porc;
+uint8_t convertTimeToPercentage(int rs_index, unsigned long tiempo){
+  uint8_t percent = (uint8_t)(tiempo*100/rs_full_path_time[rs_index-1]);
+  if(percent > 100) percent = 100;
+  if(percent < 0) percent = 0;
+  return percent;
 }
 
-// Devuelve la conversion de porcentaje a tiempo, y si es 100 o mas incluye el desfase de la persiana acumulada abajo
-unsigned long porcentajeATiempo(int rs_index, uint8_t porcentaje){
+// Return conversion from percentage to time in ms. If percentage greater than 100 includes additional time
+unsigned long convertPercentageToTime(int rs_index, uint8_t porcentaje){
   unsigned long valor;
   if(porcentaje < 0){
     valor = 0;
   }else if(valor >= 100){
-    valor = (unsigned long) per_tiempo_total_recorrido[rs_index-1];
+    valor = (unsigned long) rs_full_path_time[rs_index-1];
   }else{
-    valor = (unsigned long) (per_tiempo_total_recorrido[rs_index-1]*porcentaje/100);
+    valor = (unsigned long) (rs_full_path_time[rs_index-1]*porcentaje/100);
   }
-  snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Porcentaje a Tiempo: porc:%d tiempo:%d tiempoTotRecorrido:%d"), rs_index, porcentaje, valor, per_tiempo_total_recorrido[rs_index-1]);
+  snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Percentage to time: percent:%d time:%d totaltime:%d"), rs_index, porcentaje, valor, rs_full_path_time[rs_index-1]);
   AddLog(LOG_LEVEL_DEBUG_MORE);
   return valor;
 }
 
-// Actualiza la variable perTiempoPosicionActual en caso de estar subiendo o bajando. Si esta parado no hace nada
-// Es importante justo antes de pasar a estado parado llamar a esta funcion para actualizar su valor
-void actualizarTiempoPosicionActual(int rs_index){
+// Updates rsCurrentPositionTime if not idle.
+// Call this function just before stopping to update its value
+void updateCurrentPositionTime(int rs_index){
   unsigned long now = millis();
-  if(perState[rs_index-1] == RS_UP){
-    // Estaba subiendo
-    // Calculo la posicion actual = pos inicial menos el tiempo que se ha movido
-    perTiempoPosicionActual[rs_index-1] = perTiempoPosicionInicial[rs_index-1] - (now - perTiempoInicioMotor[rs_index-1]);
+  if(rsMotorStatus[rs_index-1] == RS_UP){
+    // it was going up
+    // current pos = initial pos minus elapsed time since started
+    rsCurrentPositionTime[rs_index-1] = rsInitialPositionTime[rs_index-1] - (now - rsInitialTime[rs_index-1]);
 
-    snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Pos act calculada subiendo:%d"), rs_index, perTiempoPosicionActual[rs_index-1]);
+    snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Current pos updated going up:%d"), rs_index, rsCurrentPositionTime[rs_index-1]);
     AddLog(LOG_LEVEL_DEBUG_MORE);
-    // Corrijo
-    if(perTiempoPosicionActual[rs_index-1] < 0){
-      perTiempoPosicionActual[rs_index-1] = 0;
+    // Fix it
+    if(rsCurrentPositionTime[rs_index-1] < 0){
+      rsCurrentPositionTime[rs_index-1] = 0;
 
-      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Corrijo a cero:%d"), rs_index, perTiempoPosicionActual[rs_index-1]);
+      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Fixed to zero:%d"), rs_index, rsCurrentPositionTime[rs_index-1]);
       AddLog(LOG_LEVEL_DEBUG_MORE);
     }
-  }else if(perState[rs_index-1] == RS_DOWN){
-    // Estaba bajando
-    // Calculo la posicion actual = pos inicial mas el tiempo que se ha movido
-    perTiempoPosicionActual[rs_index-1] = perTiempoPosicionInicial[rs_index-1] + (now - perTiempoInicioMotor[rs_index-1]);
+  }else if(rsMotorStatus[rs_index-1] == RS_DOWN){
+    // it was going down
+    // current por = initial pos plus time elapsed since started
+    rsCurrentPositionTime[rs_index-1] = rsInitialPositionTime[rs_index-1] + (now - rsInitialTime[rs_index-1]);
 
-    snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Pos act calculada bajando: %d"), rs_index, perTiempoPosicionActual[rs_index-1]);
+    snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Current pos updated going down: %d"), rs_index, rsCurrentPositionTime[rs_index-1]);
     AddLog(LOG_LEVEL_DEBUG);
 
-    // Corrijo
-    if(perTiempoPosicionActual[rs_index-1] > (per_tiempo_total_recorrido[rs_index-1] + per_tiempo_adicional_lamas[rs_index-1])){
-      perTiempoPosicionActual[rs_index-1] = per_tiempo_total_recorrido[rs_index-1] + per_tiempo_adicional_lamas[rs_index-1];
+    // Fix it
+    if(rsCurrentPositionTime[rs_index-1] > (rs_full_path_time[rs_index-1] + rs_time_from_100_to_max[rs_index-1])){
+      rsCurrentPositionTime[rs_index-1] = rs_full_path_time[rs_index-1] + rs_time_from_100_to_max[rs_index-1];
 
-      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Corrijo al max recorrido mas lamas:%d"), rs_index, perTiempoPosicionActual[rs_index-1]);
+      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Fixed max value:%d"), rs_index, rsCurrentPositionTime[rs_index-1]);
       AddLog(LOG_LEVEL_DEBUG_MORE);
     }
   }
@@ -570,9 +571,9 @@ boolean RollershutterMqttData(void){
   int16_t found = 0;
   uint16_t i = 0;
 
-  // Extraigo el texto de la accion y el indice
+  // Extract command and index to be applied
   type = strrchr(XdrvMailbox.topic, '/');
-  // Extraigo el texto de la accion y el indice
+
   index = 1;
   if (type != NULL) {
     type++;
@@ -596,14 +597,14 @@ boolean RollershutterMqttData(void){
   if (type != NULL) {
     int command_code = GetCommandCode(command, sizeof(command), type, kRollerShutterCommands);
 
-    if ((CMND_RS_AC == command_code) && (index > 0) && (index <= PER_NUM_PERSIANAS)) {
-      // Es un comando para la persiana y viene seguido de un indice
-      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: ======= Comando MQTT ======="), index);
+    if ((CMND_RS_AC == command_code) && (index > 0) && (index <= RS_MAX_ROLLERSHUTTERS)) {
+      // Its a rollershutter command for action
+      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: ======= MQTT Command ======="), index);
       AddLog(LOG_LEVEL_INFO);
 
       // 0 Stop, 1 UP, 2 DOWN, 3 UPDATE_VALUES
-      int valor = atoi(XdrvMailbox.data);
-      switch(valor){
+      int value = atoi(XdrvMailbox.data);
+      switch(value){
         case 0: // Stop
           RSStop(index);
           break;
@@ -617,30 +618,30 @@ boolean RollershutterMqttData(void){
           RSUpdateInfo(index);
           break;
       }
-      // Pongo mqtt_data a cero para que no envie ningun mensaje adicional a mqtt
+      // Set mqtt_data to zero so that no additional MQTT messages are sent
       mqtt_data[0] = '\0';
       found = 1;
-    }else if ((CMND_RS_PC == command_code) && (index > 0) && (index <= PER_NUM_PERSIANAS)) {
-      // Es un comando para la persiana y viene seguido de un indice
-      int valor = atoi(XdrvMailbox.data);
-      if ((valor >= 0) && (valor <= 100)) {
-        // Viene un valor entre 0 y 100, correcto
-        // Miro si viene un comando o el ultimo estado conocido para inicializar el porcentajeActual
+    }else if ((CMND_RS_PC == command_code) && (index > 0) && (index <= RS_MAX_ROLLERSHUTTERS)) {
+      // Its a rollershutter command for percentage
+      int value = atoi(XdrvMailbox.data);
+      if ((value >= 0) && (value <= 100)) {
+        // Value is between 0 and 100, ok
+        // Check if its a request or a previous value retained to be set as initial value
         if(strstr(XdrvMailbox.topic, D_STAT) != NULL){
-          // Es la inicializacion con el ultimo porcentaje enviado con retained
-          snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: ======= Valor inicial retained: %d"), index, valor);
+          // Is a retained value
+          snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: ======= Retained value received: %d"), index, valor);
           AddLog(LOG_LEVEL_INFO);
 
-          rsInitMqttValue(index, valor);
+          rsInitMqttValue(index, value);
         }else{
-          snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: ======= Porcentaje pedido: %d"), index, valor);
+          snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: ======= Requested a percentage: %d"), index, valor);
           AddLog(LOG_LEVEL_INFO);
 
-          RSPercent(index, valor);
+          RSPercent(index, value);
         }
         found = 1;
       }
-      // Pongo mqtt_data a cero para que no envie ningun mensaje adicional a mqtt
+      // Set mqtt_data to zero so that no additional MQTT messages are sent
       mqtt_data[0] = '\0';
     }
   }
@@ -671,7 +672,7 @@ boolean RollerShutterCommand(void){
     AddLog(LOG_LEVEL_INFO);
 
   if(0 == strncasecmp_P(XdrvMailbox.topic, PSTR(D_CMND_RS), ua_prefix_len)){
-    // command starts with RollerShutter
+    // command starts with RollerShutter string
     int command_code = GetCommandCode(command, sizeof(command), XdrvMailbox.topic + ua_prefix_len, kRollerShutterCommands);
     if(CMND_RS_AC == command_code){
       snprintf_P(log_data, sizeof(log_data), "Command Action called: "
@@ -723,7 +724,7 @@ boolean Xdrv91(byte function){
       snprintf_P(log_data, sizeof(log_data), "RollerShutter FUNC_COMMAND");
       AddLog(LOG_LEVEL_INFO);
 
-      result = RollerShutterCommand();
+      //result = RollerShutterCommand();
       break;
     case FUNC_SHOW_SENSOR:
       snprintf_P(log_data, sizeof(log_data), "RollerShutter FUNC_SHOW_SENSOR");
@@ -736,15 +737,17 @@ boolean Xdrv91(byte function){
 
       break;
     case FUNC_MQTT_SUBSCRIBE:
-      //RollerShutterMqttSubscribe();
+      // 2 Called just after connection with MQTT is established
+      RollerShutterMqttSubscribe();
       break;
     case FUNC_MQTT_DATA:
       result = RollershutterMqttData();
       break;
     case FUNC_MQTT_INIT:
+      // 3 Called just after connection with MQTT established, after FUNC_MQTT_SUBSCRIBE and only one triggered one time
       snprintf_P(log_data, sizeof(log_data), "RollerShutter FUNC_MQTT_INIT");
       AddLog(LOG_LEVEL_INFO);
-      RollerShutterMqttSubscribe();
+      //RollerShutterMqttSubscribe();
       //RollershutterMqttData();
       break;
   }

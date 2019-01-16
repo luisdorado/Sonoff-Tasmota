@@ -1,80 +1,115 @@
-#define PER_NUM_PERSIANAS 1
+// Max rollershutters controlled (only accepts values 1 or 2)
+#define RS_MAX_ROLLERSHUTTERS 1
 
-// Persiana 1
-// Reles
-#define PERSIANA_UP_ACTUATOR_1 1
-#define PERSIANA_DOWN_ACTUATOR_1 2
+// *************************
+//   Rolleshutter #1 Config
+// *************************
+
+// Relays
+#define RS_UP_ACTUATOR_1 1
+#define RS_DOWN_ACTUATOR_1 2
 // Tiempo total en ms que tarda en hacer todo el recorrido
-#ifndef PER_TIEMPO_TOTAL_RECORRIDO_1
-#define PER_TIEMPO_TOTAL_RECORRIDO_1 19000 // ms
+#ifndef RS_FULL_PATH_TIME_1
+#define RS_FULL_PATH_TIME_1 19000 // ms
 #endif
-// Tiempo para reajustes. Cuando se le pide subir del todo, se añade al tiempo del recorrido para asegurar que llega arriba del todo
-#define PER_TIEMPO_AJUSTE_RECORRIDO_1 1000 // segs 2
-// Tiempo adicional que tarda en bajar las lamas
-#ifndef PER_TIEMPO_ADICIONAL_1
-#define PER_TIEMPO_ADICIONAL_1 4000 // 2.6 segs
+// Margin time to be applied when target position is 0 (top) or 100 (down)
+// Needed to fix possible gaps generated when too many moves from intermediate positions has ben asked
+// Assures that when target 0 or 100 position is asked it reachs the real position
+#define RS_FIX_TIME_1 1000 // segs 2
+// Extra time needed once 100% position is reached so that motor keeps moving until rs is completely down
+// 0% position   => Rollershutter is up, at the top of the window, completely hidden
+// 100% position => Rollershutter has reached the bottom of the window (still some light from outside)
+// 100% position + rs_time_from_100_to_max => Rollershutter reachs max bottom position (no light from outside)
+#ifndef RS_ADDITIONAL_TIME_1
+#define RS_ADDITIONAL_TIME_1 4000 // 2.6 segs
 #endif
 
-// Persiana 2
+// *************************
+//   Rolleshutter #2 Config
+// *************************
+
 // Reles
-#define PERSIANA_UP_ACTUATOR_2 3
-#define PERSIANA_DOWN_ACTUATOR_2 4
-// Tiempo total en ms que tarda en hacer todo el recorrido
-#ifndef PER_TIEMPO_TOTAL_RECORRIDO_2
-#define PER_TIEMPO_TOTAL_RECORRIDO_2 17000 // segs 22
-#endif
-// Tiempo para reajustes. Cuando se le pide subir del todo, se añade al tiempo del recorrido para asegurar que llega arriba del todo
-#define PER_TIEMPO_AJUSTE_RECORRIDO_2 1000 // segs 2
-// Tiempo adicional que tarda en bajar las lamas
-#ifndef PER_TIEMPO_ADICIONAL_2
-#define PER_TIEMPO_ADICIONAL_2 4220 // 2.6 segs
+#define RS_UP_ACTUATOR_2 3
+#define RS_DOWN_ACTUATOR_2 4
+// Time in ms needed to get from 0% to 100%
+#ifndef RS_FULL_PATH_TIME_2
+#define RS_FULL_PATH_TIME_2 17000 // segs 22
 #endif
 
-// Tiempo que debe pasar entre envios de estado
-const long PER_TIEMPO_ENTRE_ENVIOS_ESTADO=3000;
-// Tiempo que debe pasar entre envios de porcentaje
-const long PER_TIEMPO_ENTRE_ENVIOS_PORCENTAJE=3000;
+// Margin time to be applied when target position is 0 (top) or 100 (down)
+// Needed to fix possible gaps generated when too many moves from intermediate positions has ben asked
+// Assures that when target 0 or 100 position is asked it reachs the real position
+#define RS_FIX_TIME_2 1000 // segs 2
+// Extra time needed once 100% position is reached so that motor keeps moving until rs is completely down
+// 0% position   => Rollershutter is up, at the top of the window, completely hidden
+// 100% position => Rollershutter has reached the bottom of the window (still some light from outside)
+// 100% position + rs_time_from_100_to_max => Rollershutter reachs max bottom position (no light from outside)
+#ifndef RS_ADDITIONAL_TIME_2
+#define RS_ADDITIONAL_TIME_2 4220 // 2.6 segs
+#endif
 
-// NO EDITAR
-// Internal representation of the cover state.
+// Time between status updates
+const long RS_TIME_BETWEEN_STATUS_UPDATES=3000;
+// Time between percentage updates
+const long RS_TIME_BETWEEN_PERCENTAGE_UPDATES=3000;
+
+
+// ***************************************
+// DO NOT CHANGE ANYTHING BELOW THIS LINE
+// ***************************************
+
+// Internal representation of the rs state.
 #define RS_IDLE 0
 #define RS_UP 1
 #define RS_DOWN 2
 #define RS_NOTSEND 3
 
-// ENVIOS DE INFO
-// Guarda si se ha cambiado el estado del motor (y hay que notificarlo al GW)
-bool cambiadoEstado[2] = {false,false};
-// Guarda el ultimo estado del motor enviado
-int perStateEnviado[2] = {RS_NOTSEND,RS_NOTSEND};
-// Porcentaje de persiana enviado por ultima vez al GW
-int perPorcentajeUltimoEnviado[2] = {255,255}; // 0 ==> Persiana subida, 100 => Persiana bajada
-// Si se ha mandado el estado alguna vez al GW
-bool perInitial_state_sent[2] = {false,false};
-// Momento en el que se han enviado datos al GW por ultima vez
-unsigned long perUltimoEnvioEstado[2] = {0,0};
-unsigned long perUltimoEnvioPorcentaje[2] = {0,0};
+// INFO UPDATES
+// If status has changed, so that next time it can be sent
+bool statusChanged[2] = {false,false};
+// Last status value sent
+int rsLastStatusSent[2] = {RS_NOTSEND,RS_NOTSEND};
+// Last percentage value sent
+int rsLastPercentageSent[2] = {255,255}; // 0 ==> Persiana subida, 100 => Persiana bajada
+// If status has been sent
+bool rsInitialStateSent[2] = {false,false};
+// Last time status or percentage values were sent
+unsigned long rsLastStatusSentTime[2] = {0,0};
+unsigned long rsLastPercentageSentTime[2] = {0,0};
 
-// Configuracion
-int persiana_up_actuator[2] = {PERSIANA_UP_ACTUATOR_1,PERSIANA_UP_ACTUATOR_2};
-int persiana_down_actuator[2] = {PERSIANA_DOWN_ACTUATOR_1,PERSIANA_DOWN_ACTUATOR_2};
-// Tiempo total en ms que tarda en hacer todo el recorrido
-int per_tiempo_total_recorrido[2] = {PER_TIEMPO_TOTAL_RECORRIDO_1,PER_TIEMPO_TOTAL_RECORRIDO_2};
-// Tiempo para reajustes. Cuando se le pide subir del todo, se añade al tiempo del recorrido para asegurar que llega arriba del todo
-int per_tiempo_ajuste_recorrido[2] = {PER_TIEMPO_AJUSTE_RECORRIDO_1,PER_TIEMPO_AJUSTE_RECORRIDO_2};
-int per_tiempo_adicional_lamas[2] = {PER_TIEMPO_ADICIONAL_1,PER_TIEMPO_ADICIONAL_2};
+// Config
+int rs_up_actuator[2] = {RS_UP_ACTUATOR_1,RS_UP_ACTUATOR_2};
+int rs_down_actuator[2] = {RS_DOWN_ACTUATOR_1,RS_DOWN_ACTUATOR_2};
+// Time in ms needed to get from 0% to 100%
+int rs_full_path_time[2] = {RS_FULL_PATH_TIME_1,RS_FULL_PATH_TIME_2};
+// Margin time to be applied when target position is 0 (top) or 100 (down)
+// Needed to fix possible gaps generated when too many moves from intermediate positions has ben asked
+// Assures that when target 0 or 100 position is asked it reachs the real position
+int rs_fix_time_if_target_is_end[2] = {RS_FIX_TIME_1,RS_FIX_TIME_2};
+// Extra time needed once 100% position is reached so that motor keeps moving until rs is completely down
+// 0% position   => Rollershutter is up, at the top of the window, completely hidden
+// 100% position => Rollershutter has reached the bottom of the window (still some light from outside)
+// 100% position + rs_time_from_100_to_max => Rollershutter reachs max bottom position (no light from outside)
+int rs_time_from_100_to_max[2] = {RS_ADDITIONAL_TIME_1,RS_ADDITIONAL_TIME_2};
 
-// Estado actual del motor
-int perState[2] = {RS_IDLE,RS_IDLE};
-// Para contabilizar el tiempo en ms desde que inicio la subida o bajada del motor (y calcular el porcentaje en base al valor total del recorrido)
-unsigned long perTiempoInicioMotor[2] = {0,0};
-// Cuando comienzo a mover el motor guardo en esta variable el total de ms que deberían quedarle para llegar al porcentaje al que se le manda ir
-unsigned long perTiempoAMoverMotor[2] = {0,0};
-// Posicion en ms con respecto a arriba en la que inicio el movimiento
-long perTiempoPosicionInicial[2] = {0,0};
-// Posicion en ms con respecto a arriba en la que me encuentro
-long perTiempoPosicionActual[2] = {0,0};
-// Indica si se ha cargado el ultimo estado persistente de MQTT
-bool inicializado[2] = {false,false};
+// Motor current status
+int rsMotorStatus[2] = {RS_IDLE,RS_IDLE};
 
-int ciclosSerial = 0; // Permite mostrar el estado cada x ciclos en el serie
+// MOTION VARIABLES - Used when a new motion starts
+// Initial time at which a new movement has been started (needed to know current progress since movement started)
+unsigned long rsInitialTime[2] = {0,0};
+// Time in ms needed to complete the movement until final position is reached
+// Value is stored before a new movement is started
+unsigned long rsTotalEstimatedTime[2] = {0,0};
+// Initial position in ms (from TOP) before a new movement is started
+long rsInitialPositionTime[2] = {0,0};
+// Current position is ms from 0% (0%=TOP, 100%=BOTTOM)
+long rsCurrentPositionTime[2] = {0,0};
+
+// Shows if last saved status has been load on init
+// Tries to load status from last persistent MQTT message sent before
+// If some command is received before value is loaded, starts with default value (Position=0%) and stops waiting for MQTT last status
+bool initializedWithLastPersistentMQTTValue[2] = {false,false};
+
+// When moving, outputs current status to Serial each x handler function calls (called through FUNC_EVERY_50_MSECOND)
+int serialOutputCycles = 0;
