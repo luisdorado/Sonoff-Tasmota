@@ -9,7 +9,8 @@
 enum RollerShutterCommands { CMND_RS_AC, CMND_RS_PC };
 const char kRollerShutterCommands[] PROGMEM = D_CMND_RS_AC "|" D_CMND_RS_PC;
 
-void RollerShutterInit(){
+// Init function, called on FUNC_INIT
+void RollerShutterInit(void){
   snprintf_P(log_data, sizeof(log_data), "RollerShutter Init");
   AddLog(LOG_LEVEL_INFO);
 
@@ -19,8 +20,9 @@ void RollerShutterInit(){
   ExecuteCommandPower(4, POWER_OFF_NO_STATE, SRC_BUTTON);
 }
 
+// Called on FUNC_MQTT_SUBSCRIBE
 // Subscribe to percentage initial states, so that mqtt inits my position at start with last persistent mqtt value stored
-void RollerShutterMqttSubscribe() {
+void RollerShutterMqttSubscribe(void) {
   char stopic[TOPSZ];
 
   if(RS_MAX_ROLLERSHUTTERS > 0){
@@ -79,62 +81,73 @@ void initValues(int rs_index) {
 
 // Triggers when physical Sonoff buttun is pressed
 // We use it to start actuators manually
-void RS_Button(int btn_index, int hold_btn){
-  // Choose the right Rollershutter to be moved depending on the pressed button number
-  switch(btn_index){
-    case 1:
-      // RS#1, UP
-      if(rsMotorStatus[0] == RS_IDLE){
-        snprintf_P(log_data, sizeof(log_data), PSTR("RS1: Button pressed: UP. Going up"));
-        AddLog(LOG_LEVEL_INFO);
-        RSUp(1);
-      }else{
-        snprintf_P(log_data, sizeof(log_data), PSTR("RS1: Button pressed: UP. Stop"));
-        AddLog(LOG_LEVEL_INFO);
-        RSStop(1);
-      }
-      break;
-    case 2:
-      // RS#1, DOWN
-      if(rsMotorStatus[0] == RS_IDLE){
-        snprintf_P(log_data, sizeof(log_data), PSTR("RS1: Button pressed: DOWN. Going down"));
-        AddLog(LOG_LEVEL_INFO);
-        RSDown(1);
-      }else{
-        snprintf_P(log_data, sizeof(log_data), PSTR("RS1: Button pressed: DOWN. Stop"));
-        AddLog(LOG_LEVEL_INFO);
-        RSStop(1);
-      }
-      break;
-    case 3:
-      // RS#2, UP
-      if(rsMotorStatus[1] == RS_IDLE){
-        snprintf_P(log_data, sizeof(log_data), PSTR("RS2: Button pressed: UP. Going up"));
-        AddLog(LOG_LEVEL_INFO);
-        RSUp(2);
-      }else{
-        snprintf_P(log_data, sizeof(log_data), PSTR("RS2: Button pressed: UP. Stop"));
-        AddLog(LOG_LEVEL_INFO);
-        RSStop(2);
-      }
-      break;
-    case 4:
-      // RS#2, DOWN
-      if(rsMotorStatus[1] == RS_IDLE){
-        snprintf_P(log_data, sizeof(log_data), PSTR("RS2: Button pressed: DOWN. Going down"));
-        AddLog(LOG_LEVEL_INFO);
-        RSDown(2);
-      }else{
-        snprintf_P(log_data, sizeof(log_data), PSTR("RS2: Button pressed: DOWN. Stop"));
-        AddLog(LOG_LEVEL_INFO);
-        RSStop(2);
-      }
-      break;
+boolean RS_Button(void){
+  if (XdrvMailbox.index > 0 && (PRESSED == XdrvMailbox.payload) && (NOT_PRESSED == lastbutton[XdrvMailbox.index])) {
+    snprintf_P(log_data, sizeof(log_data), PSTR("RS: Button %d pressed"), XdrvMailbox.index);
+    AddLog(LOG_LEVEL_INFO);
+
+    int btn_index = XdrvMailbox.index;
+    int hold_btn;
+
+    // Choose the right Rollershutter to be moved depending on the pressed button number
+    switch(btn_index){
+      case 1:
+        // RS#1, UP
+        if(rsMotorStatus[0] == RS_IDLE){
+          snprintf_P(log_data, sizeof(log_data), PSTR("RS1: Button pressed: UP. Going up"));
+          AddLog(LOG_LEVEL_INFO);
+          RSUp(1);
+        }else{
+          snprintf_P(log_data, sizeof(log_data), PSTR("RS1: Button pressed: UP. Stop"));
+          AddLog(LOG_LEVEL_INFO);
+          RSStop(1);
+        }
+        break;
+      case 2:
+        // RS#1, DOWN
+        if(rsMotorStatus[0] == RS_IDLE){
+          snprintf_P(log_data, sizeof(log_data), PSTR("RS1: Button pressed: DOWN. Going down"));
+          AddLog(LOG_LEVEL_INFO);
+          RSDown(1);
+        }else{
+          snprintf_P(log_data, sizeof(log_data), PSTR("RS1: Button pressed: DOWN. Stop"));
+          AddLog(LOG_LEVEL_INFO);
+          RSStop(1);
+        }
+        break;
+      case 3:
+        // RS#2, UP
+        if(rsMotorStatus[1] == RS_IDLE){
+          snprintf_P(log_data, sizeof(log_data), PSTR("RS2: Button pressed: UP. Going up"));
+          AddLog(LOG_LEVEL_INFO);
+          RSUp(2);
+        }else{
+          snprintf_P(log_data, sizeof(log_data), PSTR("RS2: Button pressed: UP. Stop"));
+          AddLog(LOG_LEVEL_INFO);
+          RSStop(2);
+        }
+        break;
+      case 4:
+        // RS#2, DOWN
+        if(rsMotorStatus[1] == RS_IDLE){
+          snprintf_P(log_data, sizeof(log_data), PSTR("RS2: Button pressed: DOWN. Going down"));
+          AddLog(LOG_LEVEL_INFO);
+          RSDown(2);
+        }else{
+          snprintf_P(log_data, sizeof(log_data), PSTR("RS2: Button pressed: DOWN. Stop"));
+          AddLog(LOG_LEVEL_INFO);
+          RSStop(2);
+        }
+        break;
+    }
+
+    return true;  // Button press has been served here
   }
+  return false;   // Don't serve other buttons
 }
 
 // Handler, called by FUNC_EVERY_50_MSECOND througn interface
-void RollerShutterHandler(){
+void RollerShutterHandler(void){
   if(RS_MAX_ROLLERSHUTTERS>0){
     RollerShutterHandler(1);
   }
@@ -365,14 +378,14 @@ void RSUpdateInfo(int rs_index){
   rsSendCurrentValues(rs_index);
 }
 
-void RSPercent(int rs_index, byte valor) {
+void RSPercent(int rs_index, byte value) {
   initValues(rs_index);
   unsigned long now = millis();
 
   // Update current position if moving
   updateCurrentPositionTime(rs_index);
   int currentPercentage = convertTimeToPercentage(rs_index, rsCurrentPositionTime[rs_index-1]);
-  int requestedPercentage = valor;
+  int requestedPercentage = value;
   unsigned long requestedPositionTime = convertPercentageToTime(rs_index, requestedPercentage);
 
   snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Requested percentage:%d current:%d requested pos.:%d current pos.:%d"), rs_index, requestedPercentage, currentPercentage, requestedPositionTime, rsCurrentPositionTime[rs_index-1]);
@@ -460,7 +473,7 @@ void rsSendCurrentValues(int rs_index){
 void rsSendStatus(int rs_index){
   unsigned long currentMillis = millis();
   // Motor status
-  if(!rsInitialStateSent[rs_index-1] || ((rsMotorStatus[rs_index-1] != rsLastStatusSent[rs_index-1]) && (currentMillis - rsLastStatusSentTime[rs_index-1] > PER_TIEMPO_ENTRE_ENVIOS_ESTADO))){
+  if(!rsInitialStateSent[rs_index-1] || ((rsMotorStatus[rs_index-1] != rsLastStatusSent[rs_index-1]) && (currentMillis - rsLastStatusSentTime[rs_index-1] > RS_TIME_BETWEEN_STATUS_UPDATES))){
     snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Sending status to MQTT: %d"), rs_index, rsMotorStatus[rs_index-1]);
     AddLog(LOG_LEVEL_INFO);
 
@@ -484,7 +497,7 @@ void rsSendPercentage(int rs_index, boolean retained){
   unsigned long currentMillis = millis();
   int currentPct = convertTimeToPercentage(rs_index, rsCurrentPositionTime[rs_index-1]);
   // Check if: value is retained or not initialized or (has changed and time between updates reached)
-  if(!rsInitialStateSent[rs_index-1] || retained || ((rsLastPercentageSent[rs_index-1] != currentPct) && (currentMillis - rsLastPercentageSentTime[rs_index-1] > PER_TIEMPO_ENTRE_ENVIOS_PORCENTAJE))){
+  if(!rsInitialStateSent[rs_index-1] || retained || ((rsLastPercentageSent[rs_index-1] != currentPct) && (currentMillis - rsLastPercentageSentTime[rs_index-1] > RS_TIME_BETWEEN_PERCENTAGE_UPDATES))){
     #ifdef SERIAL_OUTPUT
       if(retained){
         snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Send percentage to MQTT (retained): %d"), rs_index, currentPct);
@@ -513,18 +526,18 @@ uint8_t convertTimeToPercentage(int rs_index, unsigned long tiempo){
 }
 
 // Return conversion from percentage to time in ms. If percentage greater than 100 includes additional time
-unsigned long convertPercentageToTime(int rs_index, uint8_t porcentaje){
-  unsigned long valor;
-  if(porcentaje < 0){
-    valor = 0;
-  }else if(valor >= 100){
-    valor = (unsigned long) rs_full_path_time[rs_index-1];
+unsigned long convertPercentageToTime(int rs_index, uint8_t percentage){
+  unsigned long value;
+  if(percentage < 0){
+    value = 0;
+  }else if(value >= 100){
+    value = (unsigned long) rs_full_path_time[rs_index-1];
   }else{
-    valor = (unsigned long) (rs_full_path_time[rs_index-1]*porcentaje/100);
+    value = (unsigned long) (rs_full_path_time[rs_index-1]*percentage/100);
   }
-  snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Percentage to time: percent:%d time:%d totaltime:%d"), rs_index, porcentaje, valor, rs_full_path_time[rs_index-1]);
+  snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Percentage to time: percent:%d time:%d totaltime:%d"), rs_index, percentage, value, rs_full_path_time[rs_index-1]);
   AddLog(LOG_LEVEL_DEBUG_MORE);
-  return valor;
+  return value;
 }
 
 // Updates rsCurrentPositionTime if not idle.
@@ -629,12 +642,12 @@ boolean RollershutterMqttData(void){
         // Check if its a request or a previous value retained to be set as initial value
         if(strstr(XdrvMailbox.topic, D_STAT) != NULL){
           // Is a retained value
-          snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: ======= Retained value received: %d"), index, valor);
+          snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: ======= Retained value received: %d"), index, value);
           AddLog(LOG_LEVEL_INFO);
 
           rsInitMqttValue(index, value);
         }else{
-          snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: ======= Requested a percentage: %d"), index, valor);
+          snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: ======= Requested a percentage: %d"), index, value);
           AddLog(LOG_LEVEL_INFO);
 
           RSPercent(index, value);
@@ -721,20 +734,22 @@ boolean Xdrv91(byte function){
       // Mandar porcentaje actualizado
       break;
     case FUNC_COMMAND:
-      snprintf_P(log_data, sizeof(log_data), "RollerShutter FUNC_COMMAND");
+      snprintf_P(log_data, sizeof(log_data), "RS: FUNC_COMMAND");
       AddLog(LOG_LEVEL_INFO);
-
       //result = RollerShutterCommand();
       break;
     case FUNC_SHOW_SENSOR:
-      snprintf_P(log_data, sizeof(log_data), "RollerShutter FUNC_SHOW_SENSOR");
+      snprintf_P(log_data, sizeof(log_data), "RS: FUNC_SHOW_SENSOR");
       AddLog(LOG_LEVEL_INFO);
-
+      break;
+    case FUNC_BUTTON_PRESSED:
+      // snprintf_P(log_data, sizeof(log_data), "RS: FUNC_BUTTON_PRESSED");
+      // AddLog(LOG_LEVEL_INFO);
+      result = RS_Button();
       break;
     case FUNC_SET_POWER:
-      snprintf_P(log_data, sizeof(log_data), "RollerShutter FUNC_SET_POWER");
+      snprintf_P(log_data, sizeof(log_data), "RS: FUNC_SET_POWER");
       AddLog(LOG_LEVEL_INFO);
-
       break;
     case FUNC_MQTT_SUBSCRIBE:
       // 2 Called just after connection with MQTT is established
@@ -745,10 +760,8 @@ boolean Xdrv91(byte function){
       break;
     case FUNC_MQTT_INIT:
       // 3 Called just after connection with MQTT established, after FUNC_MQTT_SUBSCRIBE and only one triggered one time
-      snprintf_P(log_data, sizeof(log_data), "RollerShutter FUNC_MQTT_INIT");
+      snprintf_P(log_data, sizeof(log_data), "RS: FUNC_MQTT_INIT");
       AddLog(LOG_LEVEL_INFO);
-      //RollerShutterMqttSubscribe();
-      //RollershutterMqttData();
       break;
   }
   return result;
