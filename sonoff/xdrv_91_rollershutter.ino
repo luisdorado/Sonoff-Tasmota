@@ -1,3 +1,22 @@
+/*
+  xdrv_91_rollershutter.ino - Rollershutter/Blind/Cover controller support for Sonoff-Tasmota
+
+  Copyright (C) 2019  Luis Dorado
+
+  This program is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
 #ifdef USE_ROLLERSHUTTER
 
 #warning **** DEF XDRV_91 ****
@@ -68,7 +87,7 @@ void initValues(int rs_index) {
     if(!initializedWithLastPersistentMQTTValue[rs_index-1]){
       // Position still not initalized
       snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Initial position forced initial value to 0"), rs_index);
-      AddLog(LOG_LEVEL_INFO);
+      AddLog(LOG_LEVEL_DEBUG);
       // Still not received last MQTT stored value, but we need to start moving, so we it manual to 0
       rsCurrentPositionTime[rs_index-1] = 0;
       initializedWithLastPersistentMQTTValue[rs_index-1] = true;
@@ -84,7 +103,7 @@ void initValues(int rs_index) {
 boolean RS_Button(void){
   if (XdrvMailbox.index > 0 && (PRESSED == XdrvMailbox.payload) && (NOT_PRESSED == lastbutton[XdrvMailbox.index])) {
     snprintf_P(log_data, sizeof(log_data), PSTR("RS: Button %d pressed"), XdrvMailbox.index);
-    AddLog(LOG_LEVEL_INFO);
+    AddLog(LOG_LEVEL_DEBUG);
 
     int btn_index = XdrvMailbox.index;
     int hold_btn;
@@ -197,7 +216,7 @@ void RollerShutterHandler(int rs_index){
       ExecuteCommandPower(rs_up_actuator[rs_index-1], POWER_OFF_NO_STATE, SRC_BUTTON);
 
       snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Motor status changed to IDLE. Current position: %d Current percentage: %d. Sending MQTT retained message to store value"), rs_index, rsCurrentPositionTime[rs_index-1], convertTimeToPercentage(rs_index, rsCurrentPositionTime[rs_index-1]));
-      AddLog(LOG_LEVEL_INFO);
+      AddLog(LOG_LEVEL_DEBUG);
 
       // Send MQTT position value as retained message
       rsSendPercentage(rs_index, true);
@@ -211,7 +230,7 @@ void RollerShutterHandler(int rs_index){
       ExecuteCommandPower(rs_up_actuator[rs_index-1], POWER_ON_NO_STATE, SRC_BUTTON);
 
       snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Motor Status changed to UP"), rs_index);
-      AddLog(LOG_LEVEL_INFO);
+      AddLog(LOG_LEVEL_DEBUG);
 
       // Send MQTT motor status message
       rsSendStatus(rs_index);
@@ -223,7 +242,7 @@ void RollerShutterHandler(int rs_index){
       ExecuteCommandPower(rs_down_actuator[rs_index-1], POWER_ON_NO_STATE, SRC_BUTTON);
 
       snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Motor Status changed to DOWN"), rs_index);
-      AddLog(LOG_LEVEL_INFO);
+      AddLog(LOG_LEVEL_DEBUG);
 
       // Send MQTT motor status message
       rsSendStatus(rs_index);
@@ -303,11 +322,11 @@ void RSUp(int rs_index){
     #ifdef SERIAL_OUTPUT
       if(rsCurrentPositionTime[rs_index-1] == 0){
         snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Already at TOP, do nothing"), rs_index);
-        AddLog(LOG_LEVEL_INFO);
+        AddLog(LOG_LEVEL_DEBUG);
       }
       if((rsInitialPositionTime[rs_index-1] - rsTotalEstimatedTime[rs_index-1]) <= 0){
         snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Same target position than before, doing nothing"), rs_index);
-        AddLog(LOG_LEVEL_INFO);
+        AddLog(LOG_LEVEL_DEBUG);
       }
     #endif
     // Status and position are sent again as it seems to have wrong values stored
@@ -358,11 +377,11 @@ void RSDown(int rs_index){
     #ifdef SERIAL_OUTPUT
       if(rsCurrentPositionTime[rs_index-1] >= (rs_full_path_time[rs_index-1] + rs_time_from_100_to_max[rs_index-1])){
         snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Already at the bottom, doing nothing. MQTT status resent"), rs_index);
-        AddLog(LOG_LEVEL_INFO);
+        AddLog(LOG_LEVEL_DEBUG);
       }
       if((rsInitialPositionTime[rs_index-1] + rsTotalEstimatedTime[rs_index-1]) >= (rs_full_path_time[rs_index-1] + rs_time_from_100_to_max[rs_index-1])){
         snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Same target than before, doing nothing. MQTT status resent"), rs_index);
-        AddLog(LOG_LEVEL_INFO);
+        AddLog(LOG_LEVEL_DEBUG);
       }
     #endif
     if(rsCurrentPositionTime[rs_index-1] >= (rs_full_path_time[rs_index-1] + rs_time_from_100_to_max[rs_index-1])){
@@ -389,7 +408,7 @@ void RSPercent(int rs_index, byte value) {
   unsigned long requestedPositionTime = convertPercentageToTime(rs_index, requestedPercentage);
 
   snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Requested percentage:%d current:%d requested pos.:%d current pos.:%d"), rs_index, requestedPercentage, currentPercentage, requestedPositionTime, rsCurrentPositionTime[rs_index-1]);
-  AddLog(LOG_LEVEL_INFO);
+  AddLog(LOG_LEVEL_DEBUG);
 
   // Check if already at requested percentage
   if(currentPercentage != requestedPercentage){
@@ -400,8 +419,8 @@ void RSPercent(int rs_index, byte value) {
     // Calculate moving direction
     if(requestedPercentage < currentPercentage){
       // Have to go UP
-      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Subiendo"), rs_index);
-      AddLog(LOG_LEVEL_INFO);
+      snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Going up"), rs_index);
+      AddLog(LOG_LEVEL_DEBUG);
 
       // Set estimated time
       // If currently at the bottom, current position includes additional_time
@@ -422,7 +441,7 @@ void RSPercent(int rs_index, byte value) {
     }else{
       // Have to go down
       snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Going down"), rs_index);
-      AddLog(LOG_LEVEL_INFO);
+      AddLog(LOG_LEVEL_DEBUG);
 
       // Set estimated time
       rsTotalEstimatedTime[rs_index-1] = requestedPositionTime - rsCurrentPositionTime[rs_index-1];
@@ -454,7 +473,7 @@ void RSPercent(int rs_index, byte value) {
       rsTotalEstimatedTime[rs_index-1] = now - rsInitialTime[rs_index-1];
 
       snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Requested same percentage we are currently at. Stopping"), rs_index);
-      AddLog(LOG_LEVEL_INFO);
+      AddLog(LOG_LEVEL_DEBUG);
       // Call handler right now instead of waiting for next iteration
       RollerShutterHandler(rs_index);
     }
@@ -475,7 +494,7 @@ void rsSendStatus(int rs_index){
   // Motor status
   if(!rsInitialStateSent[rs_index-1] || ((rsMotorStatus[rs_index-1] != rsLastStatusSent[rs_index-1]) && (currentMillis - rsLastStatusSentTime[rs_index-1] > RS_TIME_BETWEEN_STATUS_UPDATES))){
     snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Sending status to MQTT: %d"), rs_index, rsMotorStatus[rs_index-1]);
-    AddLog(LOG_LEVEL_INFO);
+    AddLog(LOG_LEVEL_DEBUG);
 
     // Update status in MQTT
     char stopic[TOPSZ];
@@ -501,7 +520,7 @@ void rsSendPercentage(int rs_index, boolean retained){
     #ifdef SERIAL_OUTPUT
       if(retained){
         snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Send percentage to MQTT (retained): %d"), rs_index, currentPct);
-        AddLog(LOG_LEVEL_INFO);
+        AddLog(LOG_LEVEL_DEBUG);
       }else{
         snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: Send percentage to MQTT: %d"), rs_index, currentPct);
         AddLog(LOG_LEVEL_DEBUG);
@@ -605,7 +624,7 @@ boolean RollershutterMqttData(void){
 
   snprintf_P(log_data, sizeof(log_data), PSTR("RS MQTT CMD: " D_INDEX " %d, " D_COMMAND " %s, " D_DATA " %s"),
     index, type, XdrvMailbox.data);
-  AddLog(LOG_LEVEL_INFO);
+  AddLog(LOG_LEVEL_DEBUG);
 
   if (type != NULL) {
     int command_code = GetCommandCode(command, sizeof(command), type, kRollerShutterCommands);
@@ -613,7 +632,7 @@ boolean RollershutterMqttData(void){
     if ((CMND_RS_AC == command_code) && (index > 0) && (index <= RS_MAX_ROLLERSHUTTERS)) {
       // Its a rollershutter command for action
       snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: ======= MQTT Command ======="), index);
-      AddLog(LOG_LEVEL_INFO);
+      AddLog(LOG_LEVEL_DEBUG);
 
       // 0 Stop, 1 UP, 2 DOWN, 3 UPDATE_VALUES
       int value = atoi(XdrvMailbox.data);
@@ -643,12 +662,12 @@ boolean RollershutterMqttData(void){
         if(strstr(XdrvMailbox.topic, D_STAT) != NULL){
           // Is a retained value
           snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: ======= Retained value received: %d"), index, value);
-          AddLog(LOG_LEVEL_INFO);
+          AddLog(LOG_LEVEL_DEBUG);
 
           rsInitMqttValue(index, value);
         }else{
           snprintf_P(log_data, sizeof(log_data), PSTR("RS%d: ======= Requested a percentage: %d"), index, value);
-          AddLog(LOG_LEVEL_INFO);
+          AddLog(LOG_LEVEL_DEBUG);
 
           RSPercent(index, value);
         }
@@ -682,7 +701,7 @@ boolean RollerShutterCommand(void){
     (XdrvMailbox.payload >= 0 ? XdrvMailbox.topic : ""),
     (XdrvMailbox.data_len >= 0 ? XdrvMailbox.data : ""));
 
-    AddLog(LOG_LEVEL_INFO);
+    AddLog(LOG_LEVEL_DEBUG);
 
   if(0 == strncasecmp_P(XdrvMailbox.topic, PSTR(D_CMND_RS), ua_prefix_len)){
     // command starts with RollerShutter string
@@ -696,7 +715,7 @@ boolean RollerShutterCommand(void){
 	      (XdrvMailbox.payload >= 0 ? XdrvMailbox.topic : ""),
 	      (XdrvMailbox.data_len >= 0 ? XdrvMailbox.data : ""));
 
-        AddLog(LOG_LEVEL_INFO);
+        AddLog(LOG_LEVEL_DEBUG);
     }else if(CMND_RS_PC == command_code){
       snprintf_P(log_data, sizeof(log_data), "Command Percent called: "
         "index: %d data_len: %d payload: %d topic: %s data: %s\n",
@@ -706,7 +725,7 @@ boolean RollerShutterCommand(void){
 	      (XdrvMailbox.payload >= 0 ? XdrvMailbox.topic : ""),
 	      (XdrvMailbox.data_len >= 0 ? XdrvMailbox.data : ""));
 
-        AddLog(LOG_LEVEL_INFO);
+        AddLog(LOG_LEVEL_DEBUG);
     }else{
       serviced = false;
     }
@@ -735,21 +754,21 @@ boolean Xdrv91(byte function){
       break;
     case FUNC_COMMAND:
       snprintf_P(log_data, sizeof(log_data), "RS: FUNC_COMMAND");
-      AddLog(LOG_LEVEL_INFO);
+      AddLog(LOG_LEVEL_DEBUG);
       //result = RollerShutterCommand();
       break;
     case FUNC_SHOW_SENSOR:
       snprintf_P(log_data, sizeof(log_data), "RS: FUNC_SHOW_SENSOR");
-      AddLog(LOG_LEVEL_INFO);
+      AddLog(LOG_LEVEL_DEBUG);
       break;
     case FUNC_BUTTON_PRESSED:
       // snprintf_P(log_data, sizeof(log_data), "RS: FUNC_BUTTON_PRESSED");
-      // AddLog(LOG_LEVEL_INFO);
+      // AddLog(LOG_LEVEL_DEBUG);
       result = RS_Button();
       break;
     case FUNC_SET_POWER:
       snprintf_P(log_data, sizeof(log_data), "RS: FUNC_SET_POWER");
-      AddLog(LOG_LEVEL_INFO);
+      AddLog(LOG_LEVEL_DEBUG);
       break;
     case FUNC_MQTT_SUBSCRIBE:
       // 2 Called just after connection with MQTT is established
@@ -761,7 +780,7 @@ boolean Xdrv91(byte function){
     case FUNC_MQTT_INIT:
       // 3 Called just after connection with MQTT established, after FUNC_MQTT_SUBSCRIBE and only one triggered one time
       snprintf_P(log_data, sizeof(log_data), "RS: FUNC_MQTT_INIT");
-      AddLog(LOG_LEVEL_INFO);
+      AddLog(LOG_LEVEL_DEBUG);
       break;
   }
   return result;
